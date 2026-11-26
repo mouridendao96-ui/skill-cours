@@ -1,0 +1,326 @@
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Cours au téléphone</title>
+<style>
+  /* Layout : bandeau d'état + zone de transcription qui défile + barre d'actions fixe en bas */
+  :root{
+    --bg:#f6f4ef; --surface:#ffffff; --ink:#1c1b19; --ink-dim:#6b6558;
+    --accent:#b5472b; --accent-soft:#f0ddd4; --line:#e3ddd1; --danger:#b5472b;
+    font-family:"Source Sans 3",system-ui,sans-serif;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#17150f; --surface:#211e17; --ink:#efe9dd; --ink-dim:#a39a87;
+      --accent:#e2855f; --accent-soft:#3a2a22; --line:#33302585;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#17150f; --surface:#211e17; --ink:#efe9dd; --ink-dim:#a39a87;
+    --accent:#e2855f; --accent-soft:#3a2a22; --line:#333025;
+    color-scheme: dark;
+  }
+  *{box-sizing:border-box}
+  body{
+    background:var(--bg); color:var(--ink); margin:0;
+    font-family:"Source Sans 3",system-ui,sans-serif;
+    display:flex; flex-direction:column; height:100%;
+  }
+  h1{font-family:"Fraunces",Georgia,serif; font-weight:600; letter-spacing:-.01em}
+
+  header{
+    position:sticky; top:env(safe-area-inset-top,0px); z-index:10;
+    padding:14px max(16px, env(safe-area-inset-left,0px)) 12px max(16px, env(safe-area-inset-right,0px));
+    background:var(--bg); border-bottom:1px solid var(--line);
+  }
+  body::before{
+    content:""; position:fixed; inset:0 0 auto; height:env(safe-area-inset-top,0px);
+    z-index:10; background:var(--bg);
+  }
+  header h1{margin:0 0 2px; font-size:1.2rem}
+  .sub{color:var(--ink-dim); font-size:.85rem}
+
+  main{
+    flex:1; overflow-y:auto; padding:16px max(16px, env(safe-area-inset-left,0px)) 140px max(16px, env(safe-area-inset-right,0px));
+    display:flex; flex-direction:column; gap:10px;
+  }
+  .ligne{background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:10px 14px; font-size:1.02rem; line-height:1.5}
+  .ligne time{display:block; font-size:.72rem; color:var(--ink-dim); margin-bottom:3px; font-variant-numeric:tabular-nums}
+  .ligne.provisoire{opacity:.55; border-style:dashed}
+  .vide{color:var(--ink-dim); text-align:center; margin-top:20%; font-size:.95rem; padding:0 1rem}
+
+  footer{
+    position:fixed; left:0; right:0; bottom:0; z-index:20;
+    padding:12px max(16px, env(safe-area-inset-left,0px)) max(12px, env(safe-area-inset-bottom,0px)) max(16px, env(safe-area-inset-right,0px));
+    background:var(--bg); border-top:1px solid var(--line);
+    display:flex; gap:10px; align-items:center;
+  }
+  button{
+    font:inherit; border:none; border-radius:999px; cursor:pointer;
+    padding:14px 20px; font-weight:600; font-size:.95rem;
+    display:flex; align-items:center; gap:8px; justify-content:center;
+  }
+  #bascule{flex:1; background:var(--accent); color:#fff}
+  #bascule.actif{background:var(--danger)}
+  #bascule .point{width:10px;height:10px;border-radius:50%;background:#fff;opacity:.9}
+  #bascule.actif .point{animation:pulse 1.1s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  #effacer{background:transparent; color:var(--ink-dim); border:1px solid var(--line); padding:14px 16px}
+  #copier{background:var(--surface); color:var(--ink); border:1px solid var(--line); padding:14px 16px}
+
+  .etat{display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:8px}
+  .badge{font-size:.78rem; padding:3px 9px; border-radius:999px; background:var(--accent-soft); color:var(--accent); font-weight:600}
+  .avertissement{
+    margin:0 max(16px, env(safe-area-inset-left,0px)); margin-top:12px;
+    background:var(--accent-soft); color:var(--accent); border-radius:10px; padding:10px 14px; font-size:.85rem; display:none;
+  }
+</style>
+
+<header>
+  <h1>Cours au téléphone</h1>
+  <div class="etat">
+    <span class="sub" id="sousTitre">Transcription vocale en direct</span>
+    <span class="badge" id="syncBadge" style="display:none">●</span>
+  </div>
+  <input id="matiere" type="text" placeholder="Matière (ex. maths)" value="cours"
+         style="margin-top:8px; width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--line); background:var(--surface); color:var(--ink); font:inherit;">
+</header>
+
+<div class="avertissement" id="avertissement"></div>
+
+<main id="zone">
+  <p class="vide" id="videMsg">Appuie sur « Démarrer » et pose le téléphone près du prof.<br>Le texte apparaît ici au fur et à mesure.</p>
+</main>
+
+<footer>
+  <button id="effacer" title="Effacer">🗑</button>
+  <button id="bascule"><span class="point"></span><span id="baLabel">Démarrer</span></button>
+  <button id="copier" title="Copier tout le texte">Copier</button>
+</footer>
+
+<script>
+(function(){
+  var zone = document.getElementById('zone');
+  var videMsg = document.getElementById('videMsg');
+  var bascule = document.getElementById('bascule');
+  var baLabel = document.getElementById('baLabel');
+  var sousTitre = document.getElementById('sousTitre');
+  var avert = document.getElementById('avertissement');
+  var matiereInput = document.getElementById('matiere');
+  var syncBadge = document.getElementById('syncBadge');
+  var CLE = 'cours-tel-transcription-v1';
+
+  var Reco = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var reco = null, enEcoute = false, voulu = false;
+  var ligneProvisoire = null;
+
+  // ---- Synchronisation vers l'ordinateur (base de données partagée de l'artefact) ----
+  var db = null, sessionRef = null;
+  (async function initDb(){
+    try {
+      db = await claude.use('db');
+      if (db){ syncBadge.style.display = 'inline-block'; syncBadge.title = 'Synchronisation activée'; }
+    } catch(e){}
+  })();
+
+  async function demarrerSession(){
+    if (!db) return;
+    try {
+      var ref = await db.collection('sessions').add({
+        matiere: (matiereInput.value || 'cours').trim() || 'cours',
+        debut: new Date().toISOString(),
+        fin: null
+      });
+      sessionRef = ref;
+      syncBadge.style.background = 'var(--accent)'; syncBadge.style.color = '#fff';
+    } catch(e){ sessionRef = null; }
+  }
+
+  async function terminerSession(){
+    if (!db || !sessionRef) return;
+    try { await sessionRef.update({ fin: new Date().toISOString() }); } catch(e){}
+    sessionRef = null;
+    syncBadge.style.background = ''; syncBadge.style.color = '';
+  }
+
+  async function envoyerLigne(texte, heure){
+    if (!db || !sessionRef) return;
+    try {
+      await sessionRef.collection('lignes').add({ heure: heure, texte: texte, ts: Date.now() });
+    } catch(e){}
+  }
+
+  function charger(){
+    try {
+      var sauve = JSON.parse(localStorage.getItem(CLE) || '[]');
+      sauve.forEach(function(l){ ajouterLigneFinale(l.texte, l.heure, false); });
+    } catch(e){}
+  }
+  function sauvegarder(){
+    try {
+      var lignes = Array.prototype.map.call(zone.querySelectorAll('.ligne:not(.provisoire)'), function(el){
+        return { heure: el.querySelector('time').textContent, texte: el.querySelector('span').textContent };
+      });
+      localStorage.setItem(CLE, JSON.stringify(lignes));
+    } catch(e){}
+  }
+
+  function heureActuelle(){
+    var d = new Date();
+    return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
+  }
+
+  function ajouterLigneFinale(texte, heure, sauver){
+    if (!texte || !texte.trim()) return;
+    videMsg.hidden = true;
+    var h = heure || heureActuelle();
+    var div = document.createElement('div');
+    div.className = 'ligne';
+    var t = document.createElement('time'); t.textContent = h;
+    var s = document.createElement('span'); s.textContent = texte.trim();
+    div.appendChild(t); div.appendChild(s);
+    zone.appendChild(div);
+    zone.scrollTop = zone.scrollHeight;
+    if (sauver !== false){ sauvegarder(); envoyerLigne(texte.trim(), h); }
+  }
+
+  function majProvisoire(texte){
+    if (!texte){
+      if (ligneProvisoire){ ligneProvisoire.remove(); ligneProvisoire = null; }
+      return;
+    }
+    videMsg.hidden = true;
+    if (!ligneProvisoire){
+      ligneProvisoire = document.createElement('div');
+      ligneProvisoire.className = 'ligne provisoire';
+      var t = document.createElement('time'); t.textContent = heureActuelle();
+      var s = document.createElement('span');
+      ligneProvisoire.appendChild(t); ligneProvisoire.appendChild(s);
+      zone.appendChild(ligneProvisoire);
+    }
+    ligneProvisoire.querySelector('span').textContent = texte.trim();
+    zone.scrollTop = zone.scrollHeight;
+  }
+
+  if (!Reco){
+    avert.style.display = 'block';
+    avert.textContent = "Ce navigateur ne propose pas de reconnaissance vocale en direct. Ouvre cette page avec Chrome sur Android, ou Safari/Chrome sur iPhone (support variable selon la version d'iOS).";
+    bascule.disabled = true;
+    bascule.style.opacity = .5;
+  }
+
+  function creerReco(){
+    var r = new Reco();
+    r.lang = 'fr-FR';
+    r.continuous = true;
+    r.interimResults = true;
+
+    r.onresult = function(e){
+      var provisoire = '';
+      for (var i = e.resultIndex; i < e.results.length; i++){
+        var res = e.results[i];
+        if (res.isFinal){
+          ajouterLigneFinale(res[0].transcript, null, true);
+          majProvisoire(null);
+        } else {
+          provisoire += res[0].transcript;
+        }
+      }
+      if (provisoire) majProvisoire(provisoire);
+    };
+
+    r.onerror = function(e){
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed'){
+        sousTitre.textContent = "Micro refusé — autorise le micro pour ce site dans les réglages du navigateur.";
+        voulu = false;
+        arreterUI();
+      }
+      // les autres erreurs (no-speech, network) sont tolérées : onend relance si voulu=true
+    };
+
+    r.onend = function(){
+      enEcoute = false;
+      majProvisoire(null);
+      if (voulu){
+        setTimeout(function(){ if (voulu) demarrerReco(); }, 300);
+      } else {
+        arreterUI();
+      }
+    };
+
+    return r;
+  }
+
+  function demarrerReco(){
+    try {
+      reco = creerReco();
+      reco.start();
+      enEcoute = true;
+      sousTitre.textContent = "Écoute en cours — garde le téléphone près du prof";
+    } catch(e){
+      sousTitre.textContent = "Impossible de démarrer le micro.";
+      voulu = false;
+      arreterUI();
+    }
+  }
+
+  function arreterUI(){
+    bascule.classList.remove('actif');
+    baLabel.textContent = 'Démarrer';
+    if (!voulu) sousTitre.textContent = "Transcription vocale en direct — tout reste sur ce téléphone";
+  }
+
+  bascule.addEventListener('click', function(){
+    if (!Reco) return;
+    if (voulu){
+      voulu = false;
+      if (reco) try { reco.stop(); } catch(e){}
+      terminerSession();
+      matiereInput.disabled = false;
+      arreterUI();
+    } else {
+      voulu = true;
+      bascule.classList.add('actif');
+      baLabel.textContent = 'Arrêter';
+      matiereInput.disabled = true;
+      demarrerSession();
+      demarrerReco();
+    }
+  });
+
+  document.getElementById('effacer').addEventListener('click', function(){
+    zone.querySelectorAll('.ligne').forEach(function(el){ el.remove(); });
+    ligneProvisoire = null;
+    videMsg.hidden = false;
+    try { localStorage.removeItem(CLE); } catch(e){}
+  });
+
+  document.getElementById('copier').addEventListener('click', function(e){
+    var texte = Array.prototype.map.call(zone.querySelectorAll('.ligne:not(.provisoire)'), function(el){
+      return '[' + el.querySelector('time').textContent + '] ' + el.querySelector('span').textContent;
+    }).join('\n');
+    if (!texte) return;
+    navigator.clipboard.writeText(texte).then(function(){
+      var btn = e.currentTarget, orig = btn.textContent;
+      btn.textContent = 'Copié !';
+      setTimeout(function(){ btn.textContent = orig; }, 1200);
+    }).catch(function(){
+      var r = document.createRange();
+      var temp = document.createElement('pre');
+      temp.textContent = texte; temp.style.position='fixed'; temp.style.opacity='0';
+      document.body.appendChild(temp);
+      r.selectNodeContents(temp);
+      var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+      document.execCommand('copy');
+      document.body.removeChild(temp);
+    });
+  });
+
+  document.addEventListener('visibilitychange', function(){
+    if (document.hidden && voulu && reco){
+      // iOS/Android coupent souvent le micro en arrière-plan ; onend relancera au retour si possible
+    }
+  });
+
+  charger();
+})();
+</script>
