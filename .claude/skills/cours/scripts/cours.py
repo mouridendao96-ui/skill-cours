@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Agent « cours » : écoute un cours au micro, le transcrit en direct avec Whisper
-(en local, rien ne sort du Mac) et prépare la transcription pour la restitution.
+(en local, rien ne sort de l'ordinateur — Mac, Windows ou Linux) et prépare la
+transcription pour la restitution.
 
 Commandes :
   demarrer <matière> [--micro N] [--langue fr]   lance l'écoute en arrière-plan
@@ -13,8 +14,10 @@ import argparse
 import datetime as dt
 import json
 import os
+import platform
 import queue
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -25,7 +28,8 @@ from pathlib import Path
 RACINE = Path(__file__).resolve().parents[4]          # racine du projet (le dossier qui contient .claude/)
 DOSSIER_COURS = RACINE / "cours"
 ETAT = DOSSIER_COURS / ".en_cours.json"
-PY = RACINE / ".venv" / "bin" / "python"
+PY = (RACINE / ".venv" / "Scripts" / "python.exe") if platform.system() == "Windows" \
+    else (RACINE / ".venv" / "bin" / "python")
 SEG_SECONDES = int(os.environ.get("COURS_SEG", "300"))  # un fichier audio toutes les 5 min
 MODELE = os.environ.get("COURS_MODELE", "large-v3-turbo")
 THREADS = int(os.environ.get("COURS_THREADS", "4"))
@@ -138,14 +142,28 @@ def assembler(dossier, en_cours=False):
     return duree, mots
 
 
-def micro_integre_mac():
-    """Choisit le micro intégré du Mac (jamais un micro Bluetooth, trop instable)."""
+NOMS_INTEGRES = ("macbook", "built-in", "built in", "intégré", "integre",
+                  "internal", "interne", "realtek", "laptop")
+NOMS_SANS_FIL = ("bluetooth", "airpods", "wireless", "sans fil", "handsfree",
+                 "hands-free", "headset")
+
+
+def micro_integre():
+    """Choisit le micro intégré de l'ordinateur (Mac, Windows ou Linux) :
+    jamais un micro Bluetooth/sans fil, trop instable pour un enregistrement long."""
     import sounddevice as sd
-    noms_integres = ("macbook", "built-in", "intégré")
-    for i, d in enumerate(sd.query_devices()):
-        if d["max_input_channels"] > 0 and any(n in d["name"].lower() for n in noms_integres):
+    entrees = [(i, d) for i, d in enumerate(sd.query_devices()) if d["max_input_channels"] > 0]
+    for i, d in entrees:
+        nom = d["name"].lower()
+        if any(n in nom for n in NOMS_INTEGRES) and not any(n in nom for n in NOMS_SANS_FIL):
             return i
-    return sd.default.device[0]  # repli si aucun micro intégré trouvé
+    for i, d in entrees:  # repli : le micro par défaut s'il n'est pas sans fil
+        if i == sd.default.device[0] and not any(n in d["name"].lower() for n in NOMS_SANS_FIL):
+            return i
+    for i, d in entrees:  # dernier repli : n'importe quel micro filaire/interne détecté
+        if not any(n in d["name"].lower() for n in NOMS_SANS_FIL):
+            return i
+    return sd.default.device[0]  # aucun choix : on prend ce qu'il y a
 
 
 # ---------------------------------------------------------------- processus de fond
@@ -156,7 +174,7 @@ def proc_enregistrer(dossier, micro):
 
     audio = Path(dossier) / "audio"
     (audio / ".pid").write_text(str(os.getpid()))
-    dev = micro if micro is not None else micro_integre_mac()
+    dev = micro if micro is not None else micro_integre()
     sr = int(sd.query_devices(dev, "input")["default_samplerate"])
     q, arret = queue.Queue(), {"stop": False}
 
@@ -240,6 +258,35 @@ def cmd_micros(_):
             print(f"{i}: {d['name']}{'  (par défaut)' if i == defaut else ''}")
 
 
+def empecher_veille(pid):
+    """Empêche l'ordinateur de se mettre en veille tant que le processus pid tourne
+    (macOS : caffeinate ; Windows : via l'API système, en arrière-plan ; Linux : systemd-inhibit
+    si disponible). Si rien n'est disponible, l'écoute continue mais l'utilisateur doit garder
+    l'ordinateur éveillé lui-même."""
+    systeme = platform.system()
+    try:
+        if systeme == "Darwin":
+            subprocess.Popen(["caffeinate", "-i", "-w", str(pid)], start_new_session=True)
+        elif systeme == "Linux" and shutil.which("systemd-inhibit"):
+            subprocess.Popen(["systemd-inhibit", "--what=idle:sleep",
+                              "--why=Enregistrement d'un cours", "tail", "--pid", str(pid), "-f", "/dev/null"],
+                             start_new_session=True)
+        elif systeme == "Windows":
+            subprocess.Popen([str(PY), __file__, "_veille_windows", str(pid)],
+                             creationflags=subprocess.CREATE_NO_WINDOW, start_new_session=True)
+    except Exception:
+        pass  # pas bloquant : au pire l'utilisateur garde l'ordinateur éveillé manuellement
+
+
+def proc_veille_windows(pid):
+    import ctypes
+    ES_CONTINUOUS, ES_SYSTEM_REQUIRED, ES_DISPLAY_REQUIRED = 0x80000000, 0x00000001, 0x00000002
+    while vivant(pid):
+        ctypes.windll.kernel32.SetThreadExecutionState(
+            ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED)
+        time.sleep(30)
+
+
 def cmd_demarrer(a):
     etat = lire_json(ETAT)
     if etat and vivant(etat.get("pid_enregistrement")):
@@ -255,8 +302,7 @@ def cmd_demarrer(a):
     enr = subprocess.Popen(cmd_enr, stdout=journal, stderr=journal, start_new_session=True)
     trans = subprocess.Popen([str(PY), __file__, "_transcrire", str(dossier)],
                              stdout=journal, stderr=journal, start_new_session=True)
-    # empêche le Mac de se mettre en veille tant que l'écoute tourne
-    subprocess.Popen(["caffeinate", "-i", "-w", str(enr.pid)], start_new_session=True)
+    empecher_veille(enr.pid)
     ecrire_json(ETAT, {"dossier": str(dossier), "pid_enregistrement": enr.pid,
                        "pid_transcription": trans.pid, "debut": time.time()})
 
@@ -271,7 +317,9 @@ def cmd_demarrer(a):
         trans.terminate()
         ETAT.unlink(missing_ok=True)
         sys.exit("ÉCHEC : le micro n'a pas pu s'ouvrir.\n"
-                 "Vérifie Réglages Système › Confidentialité et sécurité › Micro : Claude doit être autorisé.\n"
+                 "Vérifie l'autorisation micro de l'application : macOS (Réglages Système › Confidentialité "
+                 "et sécurité › Micro), Windows (Paramètres › Confidentialité › Microphone) ou Linux "
+                 "(permissions PulseAudio/PipeWire).\n"
                  f"Détails : {dossier / 'journal.log'}")
     print(f"ÉCOUTE DÉMARRÉE — {a.matiere}")
     print(f"Micro : {lire_json(niveau, {}).get('micro', '?')}")
@@ -380,13 +428,16 @@ def main():
     e.add_argument("--micro", type=int)
     t = sp.add_parser("_transcrire")
     t.add_argument("dossier")
+    v = sp.add_parser("_veille_windows")
+    v.add_argument("pid", type=int)
     a = p.parse_args()
 
     DOSSIER_COURS.mkdir(exist_ok=True)
     {"demarrer": cmd_demarrer, "statut": cmd_statut, "arreter": cmd_arreter,
      "micros": cmd_micros, "fichier": cmd_fichier,
      "_enregistrer": lambda a: proc_enregistrer(a.dossier, a.micro),
-     "_transcrire": lambda a: proc_transcrire(a.dossier)}[a.cmd](a)
+     "_transcrire": lambda a: proc_transcrire(a.dossier),
+     "_veille_windows": lambda a: proc_veille_windows(a.pid)}[a.cmd](a)
 
 
 if __name__ == "__main__":
