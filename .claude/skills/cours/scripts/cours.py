@@ -138,6 +138,16 @@ def assembler(dossier, en_cours=False):
     return duree, mots
 
 
+def micro_integre_mac():
+    """Choisit le micro intégré du Mac (jamais un micro Bluetooth, trop instable)."""
+    import sounddevice as sd
+    noms_integres = ("macbook", "built-in", "intégré")
+    for i, d in enumerate(sd.query_devices()):
+        if d["max_input_channels"] > 0 and any(n in d["name"].lower() for n in noms_integres):
+            return i
+    return sd.default.device[0]  # repli si aucun micro intégré trouvé
+
+
 # ---------------------------------------------------------------- processus de fond
 def proc_enregistrer(dossier, micro):
     import numpy as np
@@ -146,7 +156,7 @@ def proc_enregistrer(dossier, micro):
 
     audio = Path(dossier) / "audio"
     (audio / ".pid").write_text(str(os.getpid()))
-    dev = micro if micro is not None else sd.default.device[0]
+    dev = micro if micro is not None else micro_integre_mac()
     sr = int(sd.query_devices(dev, "input")["default_samplerate"])
     q, arret = queue.Queue(), {"stop": False}
 
